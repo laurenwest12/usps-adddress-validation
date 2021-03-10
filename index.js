@@ -1,7 +1,12 @@
 const express = require('express');
 const app = express();
 const USPS = require('usps-webtools');
-const sql = require('msnodesqlv8')
+const sql = require('msnodesqlv8');
+const Bottleneck = require('bottleneck');
+
+const limiter = new Bottleneck({
+    minTime: 1
+})
 
 const { username, server, database, driver } = require('./config');
 
@@ -10,7 +15,11 @@ const connectionString = `server=${server};Database=${database};Trusted_Connecti
 const insertFields = `("SoldTo","invoiceNumber","originalAddress1","originalAddress2","originalCity","originalState","originalZip","updatedAddress1","updatedAddress2","updatedCity","updatedState","updatedZip","status")`
 
 /* Statement to get all data from SQL Server. */
-const selectStatement = `SELECT TOP 10 * FROM GlipsumAPISummary`
+const selectStatement = `SELECT * FROM GlipsumAPISummary`
+
+const submitted = async () => {
+    console.log('Submitted')
+}
 
 /* Statement to insert values into a SQL Server table. */
 const insertStatement = (table, fields, values) => {
@@ -116,13 +125,14 @@ const returnStatus = (originalAddress, updatedAddress) => {
         if (index === length - 1) {
             statusString += (`${status}`)
         } else if (index < length - 1) {
-            statusString += push(`${status}, `)
+            statusString += `${status}, `
         }
     })
+
     return statusString
 }
 
-const addressVerification = (address) => {
+const addressVerification = async (address) => {
     const { InvoiceNumber, SoldTo, DirectToStoreAddress1, DirecttoStoreAddress2, DirecttoStoreCity, DirecttoStoreState, DirecttoStoreZip } = address
 
     const originalAddress1 = DirectToStoreAddress1.trim()
@@ -131,7 +141,7 @@ const addressVerification = (address) => {
     const originalState = DirecttoStoreState.trim()
     const originalZip = DirecttoStoreZip.trim()
 
-    usps.verify({
+    try {usps.verify({
         street1: originalAddress1,
         street2: '',
         city: originalCity,
@@ -146,29 +156,39 @@ const addressVerification = (address) => {
                 city: originalCity,
                 state: originalState,
                 zip: originalZip
-            }, async (err, address) => {
-                if (err) {
-                    const originalAddress = {
-                        soldTo: SoldTo,
-                        invoiceNumber: InvoiceNumber,
-                        address1: originalAddress1,
-                        address2: originalAddress2,
-                        city: originalCity,
-                        state: originalState,
-                        zip: originalZip
-                    }
+            }, async (err1, address) => {
+                if (err1) {
+                    usps.cityStateLookup(originalZip, async (err2, res) => {
+                        const originalAddress = {
+                            soldTo: SoldTo,
+                            invoiceNumber: InvoiceNumber,
+                            address1: originalAddress1,
+                            address2: originalAddress2,
+                            city: originalCity,
+                            state: originalState,
+                            zip: originalZip
+                        }
+    
+                        const updatedAddress = {
+                            address1: '',
+                            address2: '',
+                            city: '',
+                            state: '',
+                            zip: '',
+                            status: ''
+                        }
 
-                    const updatedAddress = {
-                        address1: '',
-                        address2: '',
-                        city: '',
-                        state: '',
-                        zip: '',
-                        status: `Error: ${err.message}`
-                    }
-
-                    const query = await insertQuery('CityStateZipValidation', insertFields, [originalAddress, updatedAddress])
-                    console.log(query)
+                        if (err2) {
+                            updatedAddress.status = `Error: ${err1.message}, ${err2.message}`
+                        } else {
+                            updatedAddress.city = res.city
+                            updatedAddress.state = res.state
+                            updatedAddress.zip = res.zip
+                            updatedAddress.status = 'Zipcode lookup'
+                        }
+                        const query = await insertQuery('CityStateZipValidation', insertFields, [originalAddress, updatedAddress])
+                        // console.log(query)
+                    })
                 } else {
                     const originalAddress = {
                         soldTo: SoldTo,
@@ -194,7 +214,7 @@ const addressVerification = (address) => {
 
                     if (updatedAddress.status !== '') {
                         const query = await insertQuery('CityStateZipValidation', insertFields, [originalAddress, updatedAddress])
-                        console.log(query)
+                        // console.log(query)
                     }
                 }
             })
@@ -222,22 +242,29 @@ const addressVerification = (address) => {
             status = returnStatus(originalAddress, updatedAddress)
             updatedAddress.status = status
 
-            console.log(originalZip.substring(0, 5))
-
             if (updatedAddress.status !== '') {
                 const query = await insertQuery('CityStateZipValidation', insertFields, [originalAddress, updatedAddress])
-                console.log(query)
+                // console.log(query)
             }
         }
-    })
+    })} catch (err) {
+        console.log(err)
+    } 
 }
 
 const selectQuery = async (query) => {
-    await sql.query(connectionString, query, (err, rows) => {
+    await sql.query(connectionString, query, async (err, rows) => {
         if (err) console.log(err)
+
         //For each row in the table, verify the address.
-        rows.map(row => addressVerification(row))
-    }) 
+        rows.map((row) => {
+            limiter.schedule(async () => {
+                await addressVerification(row)
+            })
+        })
+
+        const length = rows.length
+    })
 }
 
 
