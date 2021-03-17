@@ -5,7 +5,7 @@ const sql = require('msnodesqlv8');
 const Bottleneck = require('bottleneck');
 
 const limiter = new Bottleneck({
-	minTime: 10,
+	minTime: 1,
 });
 
 const { username, server, database, driver } = require('./config');
@@ -16,11 +16,10 @@ const insertFields = `("SoldTo","invoiceNumber","originalAddress1","originalAddr
 
 /* Statement to get all data from SQL Server. */
 const selectStatement = `SELECT * FROM GlipsumAPISummary WHERE CheckedFlag <> 'Y'`;
-const insertCheckedStatement = 
-`TRUNCATE TABLE GlipsumAPISummaryCheckedLog 
+const insertCheckedStatement = `TRUNCATE TABLE GlipsumAPISummaryCheckedLog 
 INSERT INTO GlipsumAPISummaryCheckedLog
 SELECT InvoiceNumber, SoldTo, DirectToStoreAddress1, DirecttoStoreAddress2, DirecttoStoreCity, DirecttoStoreState, DirecttoStoreZip, 'Y' as CheckedFlag
-FROM GlipsumAPISummary`
+FROM GlipsumAPISummary`;
 
 /* Statement to insert values into a SQL Server table. */
 const insertStatement = (table, fields, values) => {
@@ -307,16 +306,33 @@ const addressVerification = async (address) => {
 	}
 };
 
+const wait = (ms, message) => {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	}).then(() => {
+		console.log(message);
+	});
+};
+
 const selectQuery = async (query) => {
-	await sql.query(connectionString, query, async (err, rows) => {
+	sql.query(connectionString, query, async (err, rows) => {
 		if (err) console.log(err);
 
 		//For each row in the table, verify the address.
-		await rows.map(async (row) => {
+		for (let row of rows) {
 			await limiter.schedule(async () => {
 				await addressVerification(row);
 			});
-		});
+		}
+
+		await insertChecked();
+		await wait(5000, 'Done');
+
+		// await rows.map(async (row) => {
+		// 	await limiter.schedule(async () => {
+		// 		await addressVerification(row);
+		// 	});
+		// });
 	});
 };
 
@@ -324,10 +340,11 @@ const insertChecked = async () => {
 	await sql.query(connectionString, insertCheckedStatement, (err) => {
 		if (err) console.log(err);
 	});
-}
+};
 
 app.listen(5000, async () => {
 	console.log('App is running...');
 	await selectQuery(selectStatement);
-	await insertChecked()
+	// await insertChecked();
+	// await wait(5000, 'Done');
 });
