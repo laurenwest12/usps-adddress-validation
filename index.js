@@ -9,13 +9,14 @@ const limiter = new Bottleneck({
 });
 
 const { username, server, database, driver } = require('./config');
+const { response } = require('express');
 
 const connectionString = `server=${server};Database=${database};Trusted_Connection=Yes;Driver=${driver}`;
 
 const insertFields = `("SoldTo","invoiceNumber","originalAddress1", "originalAddress2", "originalCity","originalState","originalZip","updatedAddress1","updatedAddress2","updatedCity","updatedState","updatedZip","status")`;
 
 /* Statement to get all data from SQL Server. */
-const selectStatement = `SELECT TOP 3000 * FROM GlipsumAPISummary WHERE CheckedFlag <> 'Y'`;
+const selectStatement = `SELECT TOP 100 * FROM GlipsumAPISummary WHERE CheckedFlag <> 'Y'`;
 const insertCheckedStatement = `TRUNCATE TABLE GlipsumAPISummaryCheckedLog 
 INSERT INTO GlipsumAPISummaryCheckedLog
 SELECT InvoiceNumber, SoldTo, DirecttoStoreAddress1, DirecttoStoreAddress2, DirecttoStoreCity, DirecttoStoreState, DirecttoStoreZip, 'Y' as CheckedFlag
@@ -102,15 +103,24 @@ const usps = new USPS({
 	ttl: 10000,
 });
 
+const updatedAddressFormat = {
+	address1: '',
+	address2: '',
+	city: '',
+	state: '',
+	zip: '',
+	status: '',
+};
+
 /* Create a function that will check if the original address matches the returned address from USPS.
 If not, return an array of what is different. */
 const returnStatus = (originalAddress, updatedAddress) => {
 	let statuses = [];
-	let statusString = '';
+	let statusString = ``;
 
 	if (
 		updatedAddress.address1 &&
-		originalAddress.address1.toUpperCase() !==
+		originalAddress.originalAddress1.toUpperCase() !==
 			updatedAddress.address1.toUpperCase()
 	) {
 		statuses.push('Address 1');
@@ -118,27 +128,28 @@ const returnStatus = (originalAddress, updatedAddress) => {
 
 	if (
 		updatedAddress.address2 &&
-		originalAddress.address2.toUpperCase() !==
+		originalAddress.originalAddress2.toUpperCase() !==
 			updatedAddress.address2.toUpperCase()
 	) {
 		statuses.push('Address 2');
 	}
 
 	if (
-		originalAddress.city.toUpperCase() !== updatedAddress.city.toUpperCase()
+		originalAddress.originalCity.toUpperCase() !==
+		updatedAddress.city.toUpperCase()
 	) {
 		statuses.push('City');
 	}
 
 	if (
-		originalAddress.state.toUpperCase() !==
+		originalAddress.originalState.toUpperCase() !==
 		updatedAddress.state.toUpperCase()
 	) {
 		statuses.push('State');
 	}
 
 	if (
-		originalAddress.zip.substring(0, 5) !==
+		originalAddress.originalZip.substring(0, 5) !==
 		updatedAddress.zip.substring(0, 5)
 	) {
 		statuses.push('Zip');
@@ -156,7 +167,7 @@ const returnStatus = (originalAddress, updatedAddress) => {
 	return statusString;
 };
 
-const addressVerification = async (address) => {
+const getOriginalAddress = (address) => {
 	const {
 		InvoiceNumber,
 		SoldTo,
@@ -167,282 +178,110 @@ const addressVerification = async (address) => {
 		DirecttoStoreZip,
 	} = address;
 
-	const originalAddress1 = DirecttoStoreAddress1.trim();
-	const originalAddress2 = DirecttoStoreAddress2.trim();
-	const originalCity = DirecttoStoreCity.trim();
-	const originalState = DirecttoStoreState.trim();
-	const originalZip = DirecttoStoreZip.trim();
+	return {
+		originalAddress1: DirecttoStoreAddress1.trim(),
+		originalAddress2: DirecttoStoreAddress2.trim(),
+		originalCity: DirecttoStoreCity.trim(),
+		originalState: DirecttoStoreState.trim(),
+		originalZip: DirecttoStoreZip.trim(),
+	};
+};
 
-	try {
-		usps.cityStateLookup(originalZip.substring(0, 5), async (err, res) => {
-			const originalAddress = {
-				soldTo: SoldTo,
-				invoiceNumber: InvoiceNumber,
-				address1: originalAddress1,
-				address2: originalAddress2,
-				city: originalCity,
-				state: originalState,
-				zip: originalZip,
-			};
+const getUpdatedAddress = (address) => {
+	const { street1 = '', street2 = '', city, state, zip, status } = address;
+	return {
+		updatedAddress1: street1,
+		updatedAddress2: street2,
+		updatedCity: city,
+		updatedState: state,
+		updatedZip: zip,
+		status,
+	};
+};
 
-			const updatedAddressFormat = {
-				address1: '',
-				address2: '',
-				city: '',
-				state: '',
-				zip: '',
-				status: '',
-			};
-
-			if (err) {
-				//If there is an error, something is wrong with the zipcode so try address validation.
-				usps.verify(
-					{
-						street1: originalAddress1,
-						street2: '',
-						city: originalCity,
-						state: originalState,
-						zip: originalZip,
-					},
-					(err1, address1) => {
-						if (err1) {
-							//If there is an error on street1, try to lookup with street2.
-							usps.verify(
-								{
-									street1: originalAddress2,
-									street2: '',
-									city: originalCity,
-									state: originalState,
-									zip: originalZip,
-								},
-								(err2, address2) => {
-									if (err2) {
-										const updatedFields = {
-											status: `Error: Address validation ${err2.message}`,
-										};
-										const updatedError2Obj = {
-											...updatedAddressFormat,
-											...updatedFields,
-										};
-
-										console.log(updatedError2Obj);
-									} else {
-										//Found an address2 match
-										const {
-											street1,
-											street2,
-											city,
-											state,
-											zip,
-										} = address2;
-										const status = returnStatus(
-											originalAddress,
-											{
-												address1: '',
-												address2: street1,
-												city,
-												state,
-												zip,
-											}
-										);
-										const objStatus = `Address 2 Lookup: ${status}`;
-										const updatedFields = {
-											address1: '',
-											address2: street1,
-											city,
-											state,
-											zip,
-											status: objStatus,
-										};
-										const updatedAddress2 = {
-											...updatedAddressFormat,
-											...updatedFields,
-										};
-
-										console.log(
-											originalAddress,
-											updatedAddress2
-										);
-									}
-								}
-							);
-						} else {
-							//Found an address1 match
-							const {
-								street1,
-								street2,
-								city,
-								state,
-								zip,
-							} = address1;
-							const status = returnStatus(originalAddress, {
-								address1: street1,
-								address2: street2,
-								city,
-								state,
-								zip,
-							});
-							const objStatus = `Address 1 Lookup: ${status}`;
-							const updatedFields = {
-								address1: street1,
-								address2: street2,
-								city,
-								state,
-								zip,
-								status: objStatus,
-							};
-							const updatedAddress1 = {
-								...updatedAddressFormat,
-								...updatedFields,
-							};
-
-							console.log(originalAddress, updatedAddress1);
-						}
-					}
-				);
-			} else {
-				const { city, state, zip } = res;
-
-				const status = returnStatus(originalAddress, {
-					city,
-					state,
-					zip,
-				});
-
-				//Record any changes to the city/state when doing a zipcode lookup.
-				if (status !== '' && status.indexOf('State') === -1) {
-					const objStatus = `Zipcode lookup: ${status} changed`;
-
-					const updatedFields = {
-						city,
-						state,
-						zip,
-						status: objStatus,
-					};
-
-					const updatedZipcodeAddress = {
-						...updatedAddressFormat,
-						...updatedFields,
-					};
-
-					// const query = await insertQuery(
-					// 	'GlipsumCityStateZipValidation',
-					// 	insertFields,
-					// 	[originalAddress, updatedZipcodeAddress]
-					// );
-				} else if (status.indexOf('State') !== -1) {
-					//If the state has changed, it is most likely that the zipcode is wrong.
-					//Do an address lookup on these entries.
-					usps.verify(
-						{
-							street1: originalAddress1,
-							street2: '',
-							city: originalCity,
-							state: originalState,
-							zip: originalZip,
-						},
-						(err1, address1) => {
-							if (err1) {
-								//If there is an error on street1, try to lookup with street2.
-								usps.verify(
-									{
-										street1: originalAddress2,
-										street2: '',
-										city: originalCity,
-										state: originalState,
-										zip: originalZip,
-									},
-									(err2, address2) => {
-										if (err2) {
-											const updatedFields = {
-												status: `Error: Address validation ${err2.message}`,
-											};
-											const updatedError2Obj = {
-												...updatedAddressFormat,
-												...updatedFields,
-											};
-
-											console.log(updatedError2Obj);
-										} else {
-											//Found an address2 match
-											const {
-												street1,
-												street2,
-												city,
-												state,
-												zip,
-											} = address2;
-											const status = returnStatus(
-												originalAddress,
-												{
-													address1: '',
-													address2: street1,
-													city,
-													state,
-													zip,
-												}
-											);
-											const objStatus = `Address 2 Lookup: ${status}`;
-											const updatedFields = {
-												address1: '',
-												address2: street1,
-												city,
-												state,
-												zip,
-												status: objStatus,
-											};
-											const updatedAddress2 = {
-												...updatedAddressFormat,
-												...updatedFields,
-											};
-
-											console.log(
-												originalAddress,
-												updatedAddress2
-											);
-										}
-									}
-								);
-							} else {
-								//Found an address1 match
-								const {
-									street1,
-									street2,
-									city,
-									state,
-									zip,
-								} = address1;
-								const status = returnStatus(originalAddress, {
-									address1: street1,
-									address2: street2,
-									city,
-									state,
-									zip,
-								});
-								const objStatus = `Address 1 Lookup: ${status}`;
-								const updatedFields = {
-									address1: street1,
-									address2: street2,
-									city,
-									state,
-									zip,
-									status: objStatus,
-								};
-								const updatedAddress1 = {
-									...updatedAddressFormat,
-									...updatedFields,
-								};
-
-								console.log(originalAddress, updatedAddress1);
-							}
-						}
-					);
+const address2Lookup = (address) => {
+	return new Promise((resolve) => {
+		usps.verify(
+			{
+				street1: address.originalAddress2,
+			},
+			(err, updatedAddress) => {
+				if (err) {
+					updatedAddress.status = `Error: ${err.message}`;
+					resolve([adddress, updatedAddress]);
+				} else {
+					updatedAddress.street2 = updatedAddress.street1;
+					updatedAddress.street1 = '';
+					const status = returnStatus(address, updatedAddress);
+					updatedAddress.status = status
+						? 'Address 2 lookup: ' + status
+						: status;
+					const updated = getUpdatedAddress(updatedAddress);
+					resolve([address, updated]);
 				}
 			}
-		});
-	} catch (err) {
-		console.log(err);
-	}
+		);
+	});
+};
+
+const address1LookUp = (address) => {
+	return new Promise((resolve) => {
+		usps.verify(
+			{
+				street1: address.originalAddress1,
+				street2: '',
+				city: address.originalCity,
+				state: address.originalState,
+				zip: address.originalZip,
+			},
+			async (err, updatedAddress) => {
+				if (err) {
+					const result = await address2Lookup(address);
+					resolve(result);
+				} else {
+					const status = returnStatus(address, updatedAddress);
+					updatedAddress.status = status
+						? 'Address 1 lookup: ' + status
+						: status;
+					const updated = getUpdatedAddress(updatedAddress);
+					resolve([address, updated]);
+				}
+			}
+		);
+	});
+};
+
+const zipcodeLookup = (address) => {
+	return new Promise((resolve) => {
+		usps.cityStateLookup(
+			address.originalZip,
+			async (err, updatedAddress) => {
+				if (err) {
+					const result = await address1LookUp(address);
+					resolve(result);
+				} else {
+					const status = returnStatus(address, updatedAddress);
+					if (status.indexOf('State') === -1) {
+						updatedAddress.status = status
+							? 'Zipcode lookup: ' + status
+							: status;
+						const updated = getUpdatedAddress(updatedAddress);
+						resolve([address, updated]);
+					} else {
+						const result = await address1LookUp(address);
+						resolve(result);
+					}
+				}
+			}
+		);
+	});
+};
+
+const addressVerification = async (row) => {
+	//First do a zipcode look up. If there is an error or if the state changes, do a address look up.
+	const originalAddress = getOriginalAddress(row);
+	const zipResult = await zipcodeLookup(originalAddress);
+	console.log(zipResult);
 };
 
 const wait = (ms, message) => {

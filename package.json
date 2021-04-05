@@ -1,18 +1,18 @@
 {
-  "name": "usps-address-validation",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "start": "nodemon start"
-  },
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "bottleneck": "^2.19.5",
-    "express": "^4.17.1",
-    "msnodesqlv8": "^2.0.11",
-    "nodemon": "^2.0.7",
-    "usps-webtools": "^1.0.5"
-  }
+	"name": "usps-address-validation",
+	"version": "1.0.0",
+	"description": "",
+	"main": "index.js",
+	"scripts": {
+		"start": "nodemon start"
+	},
+	"author": "",
+	"license": "ISC",
+	"dependencies": {
+		"bottleneck": "^2.19.5",
+		"express": "^4.17.1",
+		"msnodesqlv8": "^2.0.11",
+		"nodemon": "^2.0.7",
+		"usps-webtools": "^1.0.5"
+	}
 }
