@@ -5,18 +5,24 @@ const sql = require('msnodesqlv8');
 const Bottleneck = require('bottleneck');
 
 const limiter = new Bottleneck({
-	minTime: 1,
+	minTime: 0.5,
 });
 
 const { username, server, database, driver } = require('./config');
-const { response } = require('express');
-
 const connectionString = `server=${server};Database=${database};Trusted_Connection=Yes;Driver=${driver}`;
 
+/* Establish connection to USPS API. */
+const usps = new USPS({
+	server: 'http://production.shippingapis.com/ShippingAPI.dll',
+	userId: username,
+	ttl: 10000,
+});
+
+/* Fields that are in the final SQL Server import table.*/
 const insertFields = `("SoldTo","invoiceNumber","originalAddress1", "originalAddress2", "originalCity","originalState","originalZip","updatedAddress1","updatedAddress2","updatedCity","updatedState","updatedZip","status")`;
 
-/* Statement to get all data from SQL Server. */
-const selectStatement = `SELECT TOP 100 * FROM GlipsumAPISummary WHERE CheckedFlag <> 'Y'`;
+/* Statement to get all data from SQL Server and later import. */
+const selectStatement = `SELECT * FROM GlipsumAPISummary WHERE CheckedFlag <> 'Y'`;
 const insertCheckedStatement = `TRUNCATE TABLE GlipsumAPISummaryCheckedLog 
 INSERT INTO GlipsumAPISummaryCheckedLog
 SELECT InvoiceNumber, SoldTo, DirecttoStoreAddress1, DirecttoStoreAddress2, DirecttoStoreCity, DirecttoStoreState, DirecttoStoreZip, 'Y' as CheckedFlag
@@ -25,6 +31,13 @@ FROM GlipsumAPISummary`;
 /* Statement to insert values into a SQL Server table. */
 const insertStatement = (table, fields, values) => {
 	return `INSERT INTO ${table} ${fields} VALUES ${values}`;
+};
+
+/* Function that actually inserts the values into the SQL Server table.*/
+const insertChecked = async () => {
+	await sql.query(connectionString, insertCheckedStatement, (err) => {
+		if (err) console.log(err);
+	});
 };
 
 /* 
@@ -48,25 +61,24 @@ Input: [originalAddress, updatedAddress]
         status: ''
     }
 */
-
 const generateQueryRow = (arr) => {
 	let valueStr = `(`;
 	const original = arr[0];
 	const updated = arr[1];
 
 	const newObj = {
-		soldTo: original.soldTo,
-		InvoiceNumber: original.invoiceNumber,
-		originalAddress1: original.address1,
-		originalAddress2: original.address2,
-		originalCity: original.city,
-		originalState: original.state,
-		originalZip: original.zip,
-		updatedAddress1: updated.address1,
-		updatedAddress2: updated.address2,
-		updatedCity: updated.city,
-		updatedState: updated.state,
-		updatedZip: updated.zip,
+		soldTo: original.SoldTo,
+		InvoiceNumber: original.InvoiceNumber,
+		originalAddress1: original.originalAddress1,
+		originalAddress2: original.originalAddress2,
+		originalCity: original.originalCity,
+		originalState: original.originalState,
+		originalZip: original.originalZip,
+		updatedAddress1: updated.updatedAddress1,
+		updatedAddress2: updated.updatedAddress2,
+		updatedCity: updated.updatedCity,
+		updatedState: updated.updatedState,
+		updatedZip: updated.updatedZip,
 		status: updated.status,
 	};
 
@@ -87,6 +99,7 @@ const generateQueryRow = (arr) => {
 	return valueStr;
 };
 
+/* Query that takes the value and fields, converts them into SQL format, and inserts them into the SQL Server destination table.*/
 const insertQuery = async (table, fields, values) => {
 	const row = generateQueryRow(values);
 	const query = insertStatement(table, fields, row);
@@ -96,24 +109,8 @@ const insertQuery = async (table, fields, values) => {
 	return query;
 };
 
-/* Establish connection to USPS API. */
-const usps = new USPS({
-	server: 'http://production.shippingapis.com/ShippingAPI.dll',
-	userId: username,
-	ttl: 10000,
-});
-
-const updatedAddressFormat = {
-	address1: '',
-	address2: '',
-	city: '',
-	state: '',
-	zip: '',
-	status: '',
-};
-
 /* Create a function that will check if the original address matches the returned address from USPS.
-If not, return an array of what is different. */
+Return an array of what is different in string format. */
 const returnStatus = (originalAddress, updatedAddress) => {
 	let statuses = [];
 	let statusString = ``;
@@ -167,6 +164,7 @@ const returnStatus = (originalAddress, updatedAddress) => {
 	return statusString;
 };
 
+/*Create a more readable formatted object based on what is returned from the SQL table select statement.*/
 const getOriginalAddress = (address) => {
 	const {
 		InvoiceNumber,
@@ -179,6 +177,8 @@ const getOriginalAddress = (address) => {
 	} = address;
 
 	return {
+		InvoiceNumber,
+		SoldTo,
 		originalAddress1: DirecttoStoreAddress1.trim(),
 		originalAddress2: DirecttoStoreAddress2.trim(),
 		originalCity: DirecttoStoreCity.trim(),
@@ -187,6 +187,7 @@ const getOriginalAddress = (address) => {
 	};
 };
 
+/*Create an object for the updated address that has fields identifying it as the updated address.*/
 const getUpdatedAddress = (address) => {
 	const { street1 = '', street2 = '', city, state, zip, status } = address;
 	return {
@@ -199,31 +200,57 @@ const getUpdatedAddress = (address) => {
 	};
 };
 
+/* Function that uses the USPS API to look up address validation based on the address2 information provided from the SQL table.*/
 const address2Lookup = (address) => {
 	return new Promise((resolve) => {
 		usps.verify(
 			{
 				street1: address.originalAddress2,
+				street2: '',
+				city: address.originalCity,
+				state: address.originalState,
+				zip: address.originalZip,
 			},
-			(err, updatedAddress) => {
+			async (err, updatedAddress) => {
+				//If there is an error, enter it into the table tracking changes with the error.
 				if (err) {
-					updatedAddress.status = `Error: ${err.message}`;
-					resolve([adddress, updatedAddress]);
+					updated = { status: `Error: ${err.message}` };
+
+					await insertQuery(
+						'GlipsumCityStateZipValidation',
+						insertFields,
+						[address, updated]
+					);
+
+					resolve([address, updated]);
 				} else {
 					updatedAddress.street2 = updatedAddress.street1;
 					updatedAddress.street1 = '';
+
 					const status = returnStatus(address, updatedAddress);
 					updatedAddress.status = status
 						? 'Address 2 lookup: ' + status
 						: status;
 					const updated = getUpdatedAddress(updatedAddress);
-					resolve([address, updated]);
+
+					//If there is a change (the status string is not empty), record the changes in the table tracking updates to the address.
+					if (status !== '') {
+						const query = await insertQuery(
+							'GlipsumCityStateZipValidation',
+							insertFields,
+							[address, updated]
+						);
+						resolve([address, updated]);
+					} else {
+						resolve('No changes');
+					}
 				}
 			}
 		);
 	});
 };
 
+/* Function that uses the USPS API to look up address validation based on the address1 information provided from the SQL table.*/
 const address1LookUp = (address) => {
 	return new Promise((resolve) => {
 		usps.verify(
@@ -235,6 +262,7 @@ const address1LookUp = (address) => {
 				zip: address.originalZip,
 			},
 			async (err, updatedAddress) => {
+				//If there is an error with the address1 lookup, try the address 2 information.
 				if (err) {
 					const result = await address2Lookup(address);
 					resolve(result);
@@ -244,30 +272,53 @@ const address1LookUp = (address) => {
 						? 'Address 1 lookup: ' + status
 						: status;
 					const updated = getUpdatedAddress(updatedAddress);
-					resolve([address, updated]);
+
+					//If something changed (the status string is not empty), then add it to the table tracking changes.
+					if (status !== '') {
+						const query = await insertQuery(
+							'GlipsumCityStateZipValidation',
+							insertFields,
+							[address, updated]
+						);
+						resolve([address, updated]);
+					} else {
+						resolve('No changes');
+					}
 				}
 			}
 		);
 	});
 };
 
+/* Function that uses the USPS API to look up address validation base don the zipcode provided from the SQL table.*/
 const zipcodeLookup = (address) => {
 	return new Promise((resolve) => {
 		usps.cityStateLookup(
 			address.originalZip,
 			async (err, updatedAddress) => {
+				//If there is an error, there is a problem with the zipcode. Try looking the record up by address.
 				if (err) {
 					const result = await address1LookUp(address);
 					resolve(result);
 				} else {
 					const status = returnStatus(address, updatedAddress);
-					if (status.indexOf('State') === -1) {
+					if (status === '') {
+						resolve('No changes');
+					} else if (status.indexOf('State') === -1) {
+						//Makes sure the state didn't change and if it did not and there are changes, record these in the table tracking updates.
 						updatedAddress.status = status
 							? 'Zipcode lookup: ' + status
 							: status;
 						const updated = getUpdatedAddress(updatedAddress);
+
+						const query = await insertQuery(
+							'GlipsumCityStateZipValidation',
+							insertFields,
+							[address, updated]
+						);
 						resolve([address, updated]);
 					} else {
+						//If the state did change, then the zipcode was likely entered wrong. Try to look up the address by address1.
 						const result = await address1LookUp(address);
 						resolve(result);
 					}
@@ -277,11 +328,10 @@ const zipcodeLookup = (address) => {
 	});
 };
 
+/* Function that ties together the address validation.*/
 const addressVerification = async (row) => {
-	//First do a zipcode look up. If there is an error or if the state changes, do a address look up.
 	const originalAddress = getOriginalAddress(row);
 	const zipResult = await zipcodeLookup(originalAddress);
-	console.log(zipResult);
 };
 
 const wait = (ms, message) => {
@@ -303,20 +353,15 @@ const selectQuery = async (query) => {
 			});
 		}
 
+		//Insert all rows that were checked.
 		await insertChecked();
-		await wait(5000, 'Done');
-	});
-};
 
-const insertChecked = async () => {
-	await sql.query(connectionString, insertCheckedStatement, (err) => {
-		if (err) console.log(err);
+		//Log that the program is done importing.
+		await wait(5000, 'Done');
 	});
 };
 
 app.listen(5000, async () => {
 	console.log('App is running...');
 	await selectQuery(selectStatement);
-	// await insertChecked();
-	// await wait(5000, 'Done');
 });
