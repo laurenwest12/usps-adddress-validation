@@ -22,21 +22,38 @@ const usps = new USPS({
 const insertFields = `("originalAddress1", "originalAddress2", "originalCity","originalState","originalZip","updatedAddress1","updatedAddress2","updatedCity","updatedState","updatedZip","status")`;
 
 /* Statement to get all data from SQL Server and later import. */
-const selectStatement = `SELECT * FROM GlipsumAPISummary WHERE CheckedFlag <> 'Y'`;
-const insertCheckedStatement = `INSERT INTO GlipsumAPISummaryCheckedLog
+const selectStatement = `SELECT * FROM AvalaraAPISummary WHERE CheckedFlag <> 'Y'`;
+const insertCheckedStatement = `
+INSERT INTO AvalaraAPISUmmaryCheckedLog
 SELECT DISTINCT DirecttoStoreAddress1
-	  ,DirecttoStoreAddress2
-	  ,DirecttoStoreCity
-	  ,DirecttoStoreState
-	  ,DirecttoStoreZip
-	  ,'Y'
-FROM GlipsumAPISummary WHERE NOT EXISTS 
+,DirecttoStoreAddress2
+,DirecttoStoreCity
+,DirecttoStoreState
+,DirecttoStoreZip
+,'Y'
+FROM AvalaraAPISummary S WHERE NOT EXISTS 
 (SELECT DirecttoStoreAddress1
-	  ,DirecttoStoreAddress2
-	  ,DirecttoStoreCity
-	  ,DirecttoStoreState
-	  ,DirecttoStoreZip
-FROM GlipsumAPISummaryCheckedLog)`;
+,DirecttoStoreAddress2
+,DirecttoStoreCity
+,DirecttoStoreState
+,DirecttoStoreZip
+FROM AvalaraAPISummaryCheckedLog C
+WHERE S.DirecttoStoreAddress1 = C.DirecttoStoreAddress1 and
+S.DirecttoStoreAddress2 = C.DirecttoStoreAddress2 and
+S.DirecttoStoreCity =	C.DirecttoStoreCity and
+S.DirecttoStoreState = C.DirecttoStoreState and
+C.DirecttoStoreZip = C.DirecttoStoreZip)
+
+UPDATE AvalaraAPISummary
+SET CheckedFlag = 'Y'
+FROM AvalaraAPISummary S INNER JOIN
+AvalaraAPISummaryCheckedLog L on 
+S.DirecttoStoreAddress1 = L.DirecttoStoreAddress1 and
+S.DirecttoStoreAddress2 = L.DirecttoStoreAddress2 and
+S.DirecttoStoreCity = L.DirecttoStoreCity and
+S.DirecttoStoreState = L.DirecttoStoreState and 
+S.DirecttoStoreZip = L.DirecttoStoreZip
+`;
 
 /* Statement to insert values into a SQL Server table. */
 const insertStatement = (table, fields, values) => {
@@ -47,6 +64,7 @@ const insertStatement = (table, fields, values) => {
 const insertChecked = async () => {
 	await sql.query(connectionString, insertCheckedStatement, (err) => {
 		if (err) console.log(err);
+		console.log('Checked log inserted');
 	});
 };
 
@@ -219,7 +237,7 @@ const address2Lookup = (address) => {
 					updated = { status: `Error: ${err.message}` };
 
 					await insertQuery(
-						'GlipsumAddressValidation',
+						'AvalaraAddressValidation',
 						insertFields,
 						[address, updated]
 					);
@@ -238,7 +256,7 @@ const address2Lookup = (address) => {
 					//If there is a change (the status string is not empty), record the changes in the table tracking updates to the address.
 					if (status !== '') {
 						const query = await insertQuery(
-							'GlipsumAddressValidation',
+							'AvalaraAddressValidation',
 							insertFields,
 							[address, updated]
 						);
@@ -278,7 +296,7 @@ const address1LookUp = (address) => {
 					//If something changed (the status string is not empty), then add it to the table tracking changes.
 					if (status !== '') {
 						const query = await insertQuery(
-							'GlipsumAddressValidation',
+							'AvalaraAddressValidation',
 							insertFields,
 							[address, updated]
 						);
@@ -314,7 +332,7 @@ const zipcodeLookup = (address) => {
 						const updated = getUpdatedAddress(updatedAddress);
 
 						const query = await insertQuery(
-							'GlipsumAddressValidation',
+							'AvalaraAddressValidation',
 							insertFields,
 							[address, updated]
 						);
@@ -341,6 +359,7 @@ const wait = (ms, message) => {
 		setTimeout(resolve, ms);
 	}).then(() => {
 		console.log(message);
+		setTimeout(process.exit, 1 * 60);
 	});
 };
 

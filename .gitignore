@@ -1,2 +1,7 @@
 config.js
 node_modules/**/*
+PopulateAvalaraAPISummary.ps1
+PopulateAvalaraExemptions.ps1
+PopulateAvalaraReturns.ps1
+PopulateGlipsum.ps1
+RunAvalara.ps1
