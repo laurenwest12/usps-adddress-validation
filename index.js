@@ -13,7 +13,7 @@ const connectionString = `server=${server};Database=${database};Trusted_Connecti
 
 /* Establish connection to USPS API. */
 const usps = new USPS({
-	server: 'http://production.shippingapis.com/ShippingAPI.dll',
+	server: 'https://production.shippingapis.com/ShippingAPI.dll',
 	userId: username,
 	ttl: 10000,
 });
