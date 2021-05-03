@@ -19,14 +19,24 @@ const usps = new USPS({
 });
 
 /* Fields that are in the final SQL Server import table.*/
-const insertFields = `("SoldTo","invoiceNumber","originalAddress1", "originalAddress2", "originalCity","originalState","originalZip","updatedAddress1","updatedAddress2","updatedCity","updatedState","updatedZip","status")`;
+const insertFields = `("originalAddress1", "originalAddress2", "originalCity","originalState","originalZip","updatedAddress1","updatedAddress2","updatedCity","updatedState","updatedZip","status")`;
 
 /* Statement to get all data from SQL Server and later import. */
 const selectStatement = `SELECT * FROM GlipsumAPISummary WHERE CheckedFlag <> 'Y'`;
-const insertCheckedStatement = `TRUNCATE TABLE GlipsumAPISummaryCheckedLog 
-INSERT INTO GlipsumAPISummaryCheckedLog
-SELECT InvoiceNumber, SoldTo, DirecttoStoreAddress1, DirecttoStoreAddress2, DirecttoStoreCity, DirecttoStoreState, DirecttoStoreZip, 'Y' as CheckedFlag
-FROM GlipsumAPISummary`;
+const insertCheckedStatement = `INSERT INTO GlipsumAPISummaryCheckedLog
+SELECT DISTINCT DirecttoStoreAddress1
+	  ,DirecttoStoreAddress2
+	  ,DirecttoStoreCity
+	  ,DirecttoStoreState
+	  ,DirecttoStoreZip
+	  ,'Y'
+FROM GlipsumAPISummary WHERE NOT EXISTS 
+(SELECT DirecttoStoreAddress1
+	  ,DirecttoStoreAddress2
+	  ,DirecttoStoreCity
+	  ,DirecttoStoreState
+	  ,DirecttoStoreZip
+FROM GlipsumAPISummaryCheckedLog)`;
 
 /* Statement to insert values into a SQL Server table. */
 const insertStatement = (table, fields, values) => {
@@ -44,8 +54,6 @@ const insertChecked = async () => {
 Generte the VALUES() format to later be inserted into SQL Server. 
 Input: [originalAddress, updatedAddress]
     originalAddress = {
-        soldTo: '',
-        invoiceNumber: '',
         address1: '',
         address2: '',
         city: '',
@@ -67,8 +75,6 @@ const generateQueryRow = (arr) => {
 	const updated = arr[1];
 
 	const newObj = {
-		soldTo: original.SoldTo,
-		InvoiceNumber: original.InvoiceNumber,
 		originalAddress1: original.originalAddress1,
 		originalAddress2: original.originalAddress2,
 		originalCity: original.originalCity,
@@ -167,8 +173,6 @@ const returnStatus = (originalAddress, updatedAddress) => {
 /*Create a more readable formatted object based on what is returned from the SQL table select statement.*/
 const getOriginalAddress = (address) => {
 	const {
-		InvoiceNumber,
-		SoldTo,
 		DirecttoStoreAddress1,
 		DirecttoStoreAddress2,
 		DirecttoStoreCity,
@@ -177,8 +181,6 @@ const getOriginalAddress = (address) => {
 	} = address;
 
 	return {
-		InvoiceNumber,
-		SoldTo,
 		originalAddress1: DirecttoStoreAddress1.trim(),
 		originalAddress2: DirecttoStoreAddress2.trim(),
 		originalCity: DirecttoStoreCity.trim(),
@@ -217,7 +219,7 @@ const address2Lookup = (address) => {
 					updated = { status: `Error: ${err.message}` };
 
 					await insertQuery(
-						'GlipsumCityStateZipValidation',
+						'GlipsumAddressValidation',
 						insertFields,
 						[address, updated]
 					);
@@ -236,7 +238,7 @@ const address2Lookup = (address) => {
 					//If there is a change (the status string is not empty), record the changes in the table tracking updates to the address.
 					if (status !== '') {
 						const query = await insertQuery(
-							'GlipsumCityStateZipValidation',
+							'GlipsumAddressValidation',
 							insertFields,
 							[address, updated]
 						);
@@ -276,7 +278,7 @@ const address1LookUp = (address) => {
 					//If something changed (the status string is not empty), then add it to the table tracking changes.
 					if (status !== '') {
 						const query = await insertQuery(
-							'GlipsumCityStateZipValidation',
+							'GlipsumAddressValidation',
 							insertFields,
 							[address, updated]
 						);
@@ -312,7 +314,7 @@ const zipcodeLookup = (address) => {
 						const updated = getUpdatedAddress(updatedAddress);
 
 						const query = await insertQuery(
-							'GlipsumCityStateZipValidation',
+							'GlipsumAddressValidation',
 							insertFields,
 							[address, updated]
 						);
