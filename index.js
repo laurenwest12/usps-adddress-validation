@@ -55,14 +55,43 @@ S.DirecttoStoreState = L.DirecttoStoreState and
 S.DirecttoStoreZip = L.DirecttoStoreZip
 `;
 
+const selectExemptions = `SELECT Address1 as [DirecttoStoreAddress1]
+,Address2 as [DirecttoStoreAddress2]
+,City as [DirecttoStoreCity]
+,Region as [DirecttoStoreState]
+,PostalCode as [DirecttoStoreZip]
+,'' as [CheckedFlag]
+FROM [AvalaraExemptionsToImport]`
+
+const insertCheckedExemptions = `INSERT INTO AvalaraAPISummaryCheckedLog
+SELECT Address1 as [DirecttoStoreAddress1]
+,Address2 as [DirecttoStoreAddress2]
+,City as [DirecttoStoreCity]
+,Region as [DirecttoStoreState]
+,PostalCode as [DirecttoStoreZip]
+,'Y' as [CheckedFlag]
+FROM [AvalaraExemptionsToImport] E WHERE NOT EXISTS 
+(SELECT DirecttoStoreAddress1
+,DirecttoStoreAddress2
+,DirecttoStoreCity
+,DirecttoStoreState
+,DirecttoStoreZip
+FROM AvalaraAPISummaryCheckedLog C
+WHERE E.Address1 = C.DirecttoStoreAddress1 and
+E.Address2 = C.DirecttoStoreAddress2 and
+E.City = C.DirecttoStoreCity and
+E.Region = C.DirecttoStoreState and
+E.PostalCode = C.DirecttoStoreZip)
+`
+
 /* Statement to insert values into a SQL Server table. */
 const insertStatement = (table, fields, values) => {
 	return `INSERT INTO ${table} ${fields} VALUES ${values}`;
 };
 
 /* Function that actually inserts the values into the SQL Server table.*/
-const insertChecked = async () => {
-	await sql.query(connectionString, insertCheckedStatement, (err) => {
+const insertChecked = async (statement) => {
+	await sql.query(connectionString, statement, (err) => {
 		if (err) console.log(err);
 		console.log('Checked log inserted');
 	});
@@ -375,14 +404,16 @@ const selectQuery = async (query) => {
 		}
 
 		//Insert all rows that were checked.
-		await insertChecked();
+		await insertChecked(insertCheckedStatement);
+		await insertChecked(insertCheckedExemptions)
 
 		//Log that the program is done importing.
 		await wait(5000, 'Done');
 	});
 };
 
-app.listen(5000, async () => {
+app.listen(3009, async () => {
 	console.log('App is running...');
 	await selectQuery(selectStatement);
+	await selectQuery(selectExemptions)
 });

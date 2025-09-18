@@ -1,5 +1,5 @@
 config.js
-node_modules/**/*
+node_modules/
 PopulateAvalaraAPISummary.ps1
 PopulateAvalaraExemptions.ps1
 PopulateAvalaraReturns.ps1
